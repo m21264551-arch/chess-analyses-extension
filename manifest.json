@@ -1,0 +1,62 @@
+{
+  "manifest_version": 3,
+  "name": "Post-Game Chess Coach",
+  "description": "Local post-game move grading for Chess.com and Lichess.",
+  "version": "0.2.0",
+  "icons": {
+    "16": "assets/icons/icon16.png",
+    "32": "assets/icons/icon32.png",
+    "48": "assets/icons/icon48.png",
+    "128": "assets/icons/icon128.png"
+  },
+  "permissions": ["storage", "activeTab", "scripting", "offscreen"],
+  "host_permissions": [
+    "https://lichess.org/game/export/*",
+    "https://api.chess.com/pub/player/*/games/*/*/pgn"
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "action": {
+    "default_title": "Post-Game Chess Coach",
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "assets/icons/icon16.png",
+      "32": "assets/icons/icon32.png",
+      "48": "assets/icons/icon48.png",
+      "128": "assets/icons/icon128.png"
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chess.com/*", "https://*.chess.com/*", "https://lichess.org/*"],
+      "js": [
+        "vendor/chess/prelude.js",
+        "vendor/chess/chess.js",
+        "vendor/chess/postlude.js",
+        "src/core/grading.js",
+        "src/core/pgn.js",
+        "src/core/extension-engine.js",
+        "src/core/stockfish-engine.js",
+        "src/core/analyzer.js",
+        "src/sites/lichess.js",
+        "src/sites/chesscom.js",
+        "src/config.js",
+        "src/content/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "vendor/stockfish/stockfish-18-lite-single.js",
+        "vendor/stockfish/stockfish-18-lite-single.wasm"
+      ],
+      "matches": ["https://chess.com/*", "https://*.chess.com/*", "https://lichess.org/*"]
+    }
+  ]
+}

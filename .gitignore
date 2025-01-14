@@ -1,0 +1,25 @@
+.DS_Store
+*.log
+coverage/
+dist/
+node_modules/
+__pycache__/
+*.pyc
+
+# Public repo hygiene
+.env
+.env.*
+!.env.example
+!.env.sample
+.venv/
+build/
+.vercel/
+key.properties
+*.jks
+*.keystore
+*.sqlite
+*.db
+*.pkl
+*.pickle
+*.parquet
+*.zip
