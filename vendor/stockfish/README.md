@@ -10,7 +10,7 @@ This edition of Stockfish.js comes in five flavors:
     * This is the strongest version of the engine, but it is very large (>100MB) and will only run in browsers with the proper <a href=https://web.dev/articles/cross-origin-isolation-guide>CORS headers</a> applied.
     * Files: [`stockfish-18.js`](https://github.com/nmrugg/stockfish.js/releases/download/v18.0.0/stockfish-18.js) & [`stockfish-18.wasm`](https://github.com/nmrugg/stockfish.js/releases/download/v18.0.0/stockfish-18.wasm)
  * The large single-threaded engine:
-    * This is also large but will run in browsers without CORS headers; however it cannot use multiple threads via the UCI command `setoption name Threads`.
+    * This is also large but will run in browsers without CORS headers. however it cannot use multiple threads via the UCI command `setoption name Threads`.
     * Files: [`stockfish-18-single.js`](https://github.com/nmrugg/stockfish.js/releases/download/v18.0.0/stockfish-18-single.js) & [`stockfish-18-single.wasm`](https://github.com/nmrugg/stockfish.js/releases/download/v18.0.0/stockfish-18-single.wasm)
  * The lite multi-threaded engine:
     * This is the same as the first multi-threaded but much smaller (≈7MB) and quite a bit weaker.

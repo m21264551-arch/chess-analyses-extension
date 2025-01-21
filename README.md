@@ -1,32 +1,38 @@
 # Post-Game Chess Coach
 
-A no-build Manifest V3 Chrome extension that adds a local post-game analysis panel to Chess.com and Lichess.
+Post-Game Chess Coach is a Manifest V3 Chrome extension for reviewing completed Chess.com and Lichess games.
 
-## Load In Chrome
+It fetches a finished-game PGN when possible, runs the bundled Stockfish engine locally in Chrome, and shows move grades, best moves, and short principal variations. It blocks unfinished games so it is not useful for live-game assistance.
+
+## What is included
+
+- Content scripts for Chess.com and Lichess
+- Local Stockfish 18 Lite JavaScript and WASM worker
+- PGN parsing and move grading logic
+- Chrome local storage cache for repeated reviews
+- Chrome Web Store listing copy and privacy notes
+- Node-based test runner for parser and grading behavior
+
+## Load in Chrome
 
 1. Open `chrome://extensions`.
 2. Enable Developer mode.
-3. Choose **Load unpacked** and select this repository folder.
-4. Open a completed Chess.com or Lichess game and click **Analyze** in the injected panel.
-
-The extension blocks unfinished games and does not submit moves or provide live-game assistance.
+3. Choose **Load unpacked**.
+4. Select this repository folder.
+5. Open a completed Chess.com or Lichess game and click **Analyze** in the panel.
 
 ## Test
-
-Run:
-
-```sh
-/Applications/Codex.app/Contents/Resources/node tests/run-tests.js
-```
-
-or any local Node.js binary:
 
 ```sh
 node tests/run-tests.js
 ```
 
-## Notes
+## Privacy model
 
-- Move labels are local heuristics based on Stockfish evaluations. `Brilliant` and `Great` are not exact Chess.com review labels.
-- V1 supports standard chess games from the normal starting position.
-- Chess.com automatic PGN extraction is best effort. If the page or monthly archive lookup does not expose the PGN, paste a PGN into the panel.
+The extension does not send game data to my server. PGNs and analysis results stay in the browser. Chess.com and Lichess requests are only used to retrieve the finished-game PGN for the page being reviewed.
+
+## Limitations
+
+- V1 supports standard chess from the normal starting position.
+- Chess.com PGN extraction is best effort. If automatic lookup fails, paste a PGN into the panel.
+- Labels such as `Best`, `Inaccuracy`, and `Blunder` are local heuristics from Stockfish evaluation changes.
