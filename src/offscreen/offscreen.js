@@ -62,14 +62,17 @@ async function handleEngineMessage(message) {
   throw new Error(`Unknown engine message: ${message.type}`);
 }
 
+function sendAsyncResponse(sendResponse, promise) {
+  promise
+    .then((payload) => sendResponse({ ok: true, payload }))
+    .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+  return true;
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || message.target !== "offscreen-engine") {
     return false;
   }
 
-  handleEngineMessage(message)
-    .then((payload) => sendResponse({ ok: true, payload }))
-    .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
-
-  return true;
+  return sendAsyncResponse(sendResponse, handleEngineMessage(message));
 });

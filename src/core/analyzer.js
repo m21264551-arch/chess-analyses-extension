@@ -84,6 +84,28 @@
     }
   }
 
+  function analysisChessCtor(options) {
+    const ChessCtor = (options && options.ChessCtor) || browserChess;
+    if (!pgnTools || !grading || !stockfishTools || !ChessCtor) {
+      throw new Error("Analysis dependencies are not available.");
+    }
+    return ChessCtor;
+  }
+
+  function createEngine(options) {
+    if (options.engineFactory) return options.engineFactory();
+    return new stockfishTools.StockfishEngine({
+      scriptUrl: options.scriptUrl,
+      wasmUrl: options.wasmUrl,
+      depth: options.depth || 14
+    });
+  }
+
+  async function disposeEngine(engine, options) {
+    if (options.disposeEngine === false || !engine || typeof engine.terminate !== "function") return;
+    await engine.terminate();
+  }
+
   function moveColorName(color) {
     return color === "w" ? "White" : "Black";
   }
@@ -203,6 +225,238 @@
     return null;
   }
 
+  function fenWithTurn(fen, color) {
+    const parts = String(fen || "").split(" ");
+    if (parts.length < 2) return fen;
+    parts[1] = color;
+    return parts.join(" ");
+  }
+
+  function materialGainDescription(move) {
+    const captured = String(move && move.captured || "").toLowerCase();
+    const delta = Number(move && move.materialDelta) || 0;
+    if (captured === "q" || delta >= 850) return "it wins queen-level material";
+    if (captured === "r" || delta >= 450) return "it wins a rook";
+    if (captured === "b" || captured === "n" || delta >= 250) return `it wins a ${captured === "b" ? "bishop" : captured === "n" ? "knight" : "minor piece"}`;
+    if (captured === "p" || delta >= 90) return "it wins a pawn";
+    return "";
+  }
+
+  function squareToPoint(square) {
+    return {
+      file: square.charCodeAt(0) - 97,
+      rank: Number(square[1]) - 1
+    };
+  }
+
+  function pointToSquare(file, rank) {
+    if (file < 0 || file > 7 || rank < 0 || rank > 7) return "";
+    return `${String.fromCharCode(97 + file)}${rank + 1}`;
+  }
+
+  function rayDirections(type) {
+    const diagonals = [
+      [1, 1],
+      [1, -1],
+      [-1, 1],
+      [-1, -1]
+    ];
+    const lines = [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1]
+    ];
+    if (type === "b") return diagonals;
+    if (type === "r") return lines;
+    if (type === "q") return diagonals.concat(lines);
+    return [];
+  }
+
+  function pinOrSkewerMotif(move, ChessCtor) {
+    if (!move.uci || move.uci.length < 4) return "";
+    try {
+      const to = move.uci.slice(2, 4);
+      const chess = new ChessCtor(move.afterFen);
+      const movedPiece = chess.get(to);
+      if (!movedPiece || !rayDirections(movedPiece.type).length) return "";
+
+      const start = squareToPoint(to);
+      for (const [fileStep, rankStep] of rayDirections(movedPiece.type)) {
+        const pieces = [];
+        let file = start.file + fileStep;
+        let rank = start.rank + rankStep;
+        while (file >= 0 && file <= 7 && rank >= 0 && rank <= 7) {
+          const square = pointToSquare(file, rank);
+          const piece = chess.get(square);
+          if (piece) pieces.push({ square, piece });
+          file += fileStep;
+          rank += rankStep;
+        }
+
+        const first = pieces[0];
+        const second = pieces[1];
+        if (!first || first.piece.color === movedPiece.color || !second || second.piece.color === movedPiece.color) continue;
+        if (first.piece.type !== "k" && second.piece.type === "k") {
+          return `it pins the ${pieceName(first.piece.type)} on ${first.square} to the king`;
+        }
+        if (first.piece.type === "k" && (PIECE_VALUES[second.piece.type] || 0) >= 500) {
+          return `it skewers the king to the ${pieceName(second.piece.type)} on ${second.square}`;
+        }
+      }
+    } catch (_error) {
+      return "";
+    }
+
+    return "";
+  }
+
+  function movedPieceCaptureTargets(move, ChessCtor) {
+    if (!move.uci || move.uci.length < 4) return [];
+    try {
+      const to = move.uci.slice(2, 4);
+      const chess = new ChessCtor(fenWithTurn(move.afterFen, move.color));
+      return chess
+        .moves({ square: to, verbose: true })
+        .filter((candidate) => candidate.captured)
+        .map((candidate) => ({
+          san: candidate.san,
+          square: candidate.to,
+          piece: candidate.captured,
+          value: PIECE_VALUES[candidate.captured] || 0
+        }))
+        .filter((target) => target.value >= 300)
+        .sort((a, b) => b.value - a.value);
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function targetListText(targets) {
+    const names = targets.slice(0, 2).map((target) => `${pieceName(target.piece)} on ${target.square}`);
+    if (names.length <= 1) return names[0] || "";
+    return `${names[0]} and ${names[1]}`;
+  }
+
+  function forkMotif(move, moveInfo, ChessCtor) {
+    const targets = movedPieceCaptureTargets(move, ChessCtor);
+    if (moveInfo && moveInfo.givesCheck && targets.length) {
+      return `it comes with check while also attacking the ${targetListText(targets)}`;
+    }
+    if (targets.length >= 2) {
+      return `it creates a fork by attacking the ${targetListText(targets)}`;
+    }
+    return "";
+  }
+
+  function quietMoveIdea(move, moveInfo) {
+    const piece = String((moveInfo && moveInfo.piece) || move.piece || "").toLowerCase();
+    const san = String(move.san || "");
+    const to = move.to || (move.uci && move.uci.slice(2, 4)) || "";
+    const from = move.from || (move.uci && move.uci.slice(0, 2)) || "";
+
+    if (/^O-O/.test(san)) return "it gets the king safe and brings a rook closer to the game";
+    if (piece === "p" && /^[de][45]$/.test(to)) return "it takes central space and gives your pieces better squares";
+    if ((piece === "n" || piece === "b") && (from[1] === "1" || from[1] === "8")) {
+      return `it develops a ${pieceName(piece)} instead of leaving it on the back rank`;
+    }
+    if (piece === "r") return "it improves rook activity and puts pressure on open lines";
+    if (piece === "q") return "it improves the queen's activity without losing time to a tactic";
+    return "it is mainly an optimization move: it improves the piece placement without creating a new weakness";
+  }
+
+  function positiveMoveIdea(details) {
+    const moveInfo = moveInfoForUci(details.uci, details.beforeFen, details.ChessCtor);
+    const ideas = [];
+
+    if (moveInfo && moveInfo.checkmate) {
+      ideas.push("delivers checkmate");
+    }
+
+    const gain = materialGainDescription(details);
+    if (gain) {
+      ideas.push(gain);
+    }
+
+    const fork = forkMotif(details, moveInfo, details.ChessCtor);
+    if (fork) {
+      ideas.push(fork);
+    }
+
+    const pin = pinOrSkewerMotif(details, details.ChessCtor);
+    if (pin) {
+      ideas.push(pin);
+    }
+
+    if (moveInfo && moveInfo.givesCheck && !ideas.some((idea) => /check/.test(idea))) {
+      ideas.push("it comes with check, so the opponent has to answer your threat first");
+    }
+
+    if (!ideas.length) {
+      ideas.push(quietMoveIdea(details, moveInfo));
+    }
+
+    const selected = ideas.slice(0, 2);
+    if (selected.length <= 1) return selected[0] || "";
+    return `${selected[0]}. It also ${selected[1].replace(/^it\s+/i, "")}`;
+  }
+
+  function continuationSentence(details) {
+    if (!details.pv) return "";
+    return `A natural continuation is ${details.pv}; the point is the idea, not memorizing the whole line.`;
+  }
+
+  function gradePhrase(grade) {
+    if (grade === grading.LABELS.GREAT) return "a great move";
+    if (grade === grading.LABELS.BOOK) return "book";
+    if (grade === grading.LABELS.MISS) return "a miss";
+    if (grade === grading.LABELS.INACCURACY) return "an inaccuracy";
+    if (grade === grading.LABELS.MISTAKE) return "a mistake";
+    if (grade === grading.LABELS.BLUNDER) return "a blunder";
+    return String(grade || "move").toLowerCase();
+  }
+
+  function isOpeningIssueGrade(grade) {
+    return (
+      grade === grading.LABELS.INACCURACY ||
+      grade === grading.LABELS.MISTAKE ||
+      grade === grading.LABELS.MISS ||
+      grade === grading.LABELS.BLUNDER
+    );
+  }
+
+  function isHeuristicNoteGrade(grade) {
+    return (
+      grade === grading.LABELS.BOOK ||
+      grade === grading.LABELS.BRILLIANT ||
+      grade === grading.LABELS.GREAT ||
+      grade === grading.LABELS.MISS
+    );
+  }
+
+  function coachPositiveSentence(details) {
+    const idea = positiveMoveIdea(details);
+    if (/wins (?:queen|a rook|a bishop|a knight|a minor piece|a pawn)/i.test(idea)) {
+      return ensureSentence(sentenceCase(idea));
+    }
+    if (/\bfork\b/i.test(idea)) {
+      return ensureSentence(sentenceCase(idea.replace(/^it creates/i, "this creates").replace(/^it comes/i, "this comes")));
+    }
+    if (/\bpins?\b|\bskewers?\b/i.test(idea)) {
+      return ensureSentence(sentenceCase(idea));
+    }
+    if (/\bcheck\b/i.test(idea)) {
+      return "A forcing check. The opponent has to answer before doing anything else.";
+    }
+    if (/\bcentral space\b|\bbetter squares\b/i.test(idea)) {
+      return "Good thinking! This takes space and gives your pieces better squares.";
+    }
+    if (/\bdevelops\b|\bactivity\b|\bactive\b|\boptimization\b|\bpiece placement\b/i.test(idea)) {
+      return "Good thinking! This move puts your piece into a stronger, more active position.";
+    }
+    return "They are right on target.";
+  }
+
   function nonKingMaterial(fen, ChessCtor) {
     try {
       const chess = new ChessCtor(fen);
@@ -255,13 +509,25 @@
     return /^[aeiou]/i.test(String(grade || "")) ? "an" : "a";
   }
 
+  function sentenceCase(text) {
+    const value = String(text || "").trim();
+    if (!value) return "";
+    return value[0].toUpperCase() + value.slice(1);
+  }
+
+  function ensureSentence(text) {
+    const value = String(text || "").trim();
+    if (!value) return "";
+    return /[.!?]$/.test(value) ? value : `${value}.`;
+  }
+
   function materialCoachPhrase(move) {
     const delta = Number(move && move.materialDelta) || 0;
-    if (delta <= -850) return " It also gave up queen-level material.";
-    if (delta <= -450) return " It also gave up rook-level material.";
-    if (delta <= -250) return " It also gave up at least a minor piece of material.";
+    if (delta <= -850) return "it gave up queen-level material";
+    if (delta <= -450) return "it gave up rook-level material";
+    if (delta <= -250) return "it gave up at least a minor piece of material";
     if (delta >= 250 && move && move.captured) {
-      return " Even though it won material, the resulting position was still worse than the best line.";
+      return "the capture won material, but the resulting position was still worse than the best line";
     }
     return "";
   }
@@ -342,41 +608,124 @@
     return motifs.slice(0, 2).map((motif) => motif.text).join(". Also, ");
   }
 
+  function coachEvalContext(details) {
+    const colorName = details.colorName || "The moving side";
+    return `For context, ${colorName}'s evaluation changed from ${formatMoverEval(details.evalBefore)} to ${formatMoverEval(details.evalAfter)}.`;
+  }
+
+  function betterMoveSentence(details) {
+    const best = details.bestSan || details.bestMove || "";
+    if (!best) return "";
+    if (details.pv) {
+      return `A cleaner plan was ${best}, with a sample line starting ${details.pv}.`;
+    }
+    return `A cleaner plan was ${best}.`;
+  }
+
+  function coachReason(details) {
+    const tacticalReason = motifReason(details.motifs);
+    if (tacticalReason) return tacticalReason;
+
+    const materialText = materialCoachPhrase(details);
+    if (materialText) return materialText;
+
+    const best = details.bestSan || details.bestMove || "";
+    if (best) {
+      return `${best} dealt with the position more directly, while ${details.san} gave the opponent easier play`;
+    }
+
+    return "it gave the opponent easier play";
+  }
+
   function buildCoachNote(details) {
     const grade = details.grade;
     const best = details.bestSan || details.bestMove || "";
-    const comparison = best ? ` compared with ${best}` : " compared with the engine's top move";
-    const colorName = details.colorName || "The moving side";
-    const evalText = `${colorName}'s eval went from ${formatMoverEval(details.evalBefore)} to ${formatMoverEval(details.evalAfter)}.`;
-    const lineText = details.pv ? ` The cleaner line starts ${details.pv}.` : "";
-    const materialText = materialCoachPhrase(details);
-    const tacticalReason = motifReason(details.motifs);
+    const betterMove = betterMoveSentence(details);
+    const reason = ensureSentence(sentenceCase(coachReason(details)));
 
     if (grade === grading.LABELS.BOOK) {
-      return `${details.san} was book because it follows a common opening line. ${evalText}${lineText}`;
+      return `${details.san} is book. This follows a known opening plan.`;
     }
 
     if (grade === grading.LABELS.BRILLIANT) {
-      return `${details.san} was brilliant because it kept the engine eval strong while giving up material for activity. ${evalText}${lineText}`;
+      return `${details.san} is brilliant. ${coachPositiveSentence(details)}`;
     }
 
     if (grade === grading.LABELS.BEST) {
-      return `${details.san} was best because it matched Stockfish's top choice. ${evalText}${lineText}`;
+      return `${details.san} is best. ${coachPositiveSentence(details)}`;
     }
 
     if (grade === grading.LABELS.GREAT) {
-      return `${details.san} was a great move because it stayed close to the best line and found a sharp improvement. ${evalText}${lineText}`;
+      return `${details.san} is a great move. ${coachPositiveSentence(details)}`;
     }
 
-    if (grade === grading.LABELS.EXCELLENT || grade === grading.LABELS.GOOD) {
-      return `${details.san} was ${grade.toLowerCase()} because it only gave up ${formatLoss(details.loss)}${comparison}. ${evalText}${lineText}`;
+    if (grade === grading.LABELS.EXCELLENT) {
+      return `${details.san} is excellent. ${coachPositiveSentence(details)}`;
+    }
+
+    if (grade === grading.LABELS.GOOD) {
+      return `${details.san} is good. ${coachPositiveSentence(details)} ${best && best !== details.san ? `${best} was cleaner.` : ""}`;
     }
 
     if (grade === grading.LABELS.MISS) {
-      return `${details.san} was a miss because ${tacticalReason || `it let a ${formatLoss(details.loss)} chance slip`}. ${evalText}${lineText}`;
+      return `${details.san} is a miss. ${reason} ${betterMove}`;
     }
 
-    return `${details.san} was ${gradeArticle(grade)} ${String(grade || "move").toLowerCase()} because ${tacticalReason || `it gave up ${formatLoss(details.loss)}${comparison}`}. ${evalText}${tacticalReason ? "" : materialText}${lineText}`;
+    return `${details.san} is ${gradePhrase(grade)}. ${reason} ${betterMove}`;
+  }
+
+  function moveDetailsForUci(uci, baseMove, ChessCtor) {
+    if (!uci || uci === "(none)" || uci.length < 4) return null;
+    try {
+      const chess = new ChessCtor(baseMove.beforeFen);
+      const beforeMaterial = pgnTools.materialBalance(chess, baseMove.color);
+      const played = chess.move({
+        from: uci.slice(0, 2),
+        to: uci.slice(2, 4),
+        promotion: uci.slice(4, 5) || undefined
+      });
+      if (!played) return null;
+      const afterMaterial = pgnTools.materialBalance(chess, baseMove.color);
+      return {
+        ply: baseMove.ply,
+        moveNumber: baseMove.moveNumber,
+        color: baseMove.color,
+        san: played.san,
+        uci,
+        piece: played.piece || "",
+        from: played.from || "",
+        to: played.to || "",
+        flags: played.flags || "",
+        captured: played.captured || "",
+        promotion: played.promotion || "",
+        materialDelta: afterMaterial - beforeMaterial,
+        beforeFen: baseMove.beforeFen,
+        afterFen: chess.fen(),
+        ChessCtor
+      };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function buildBranches(lines, baseMove, ChessCtor) {
+    if (!Array.isArray(lines) || !lines.length) return [];
+    return lines.slice(0, 3).map((line, index) => {
+      const uci = line && line.pv && line.pv[0] ? line.pv[0] : "";
+      const details = moveDetailsForUci(uci, baseMove, ChessCtor);
+      if (!details) return null;
+      const pv = lineToSan(line.pv, baseMove.beforeFen, ChessCtor, 6);
+      return {
+        rank: index + 1,
+        san: details.san,
+        uci,
+        eval: line && line.score ? Math.round(grading.scoreToCentipawns(line.score)) : 0,
+        pv,
+        pvSans: pv ? pv.split(/\s+/).filter(Boolean) : [],
+        pvUci: Array.isArray(line.pv) ? line.pv.slice(0, 6) : [],
+        note: coachPositiveSentence(details)
+      };
+    }).filter(Boolean);
   }
 
   function summarize(results) {
@@ -411,9 +760,7 @@
     const openingName = openingNameFromHeaders(parsed.headers || "");
     const bookMoves = moves.filter((move) => move.grade === grading.LABELS.BOOK);
     const openingMoves = moves.filter((move) => move.phase === "Opening");
-    const firstOpeningIssue = openingMoves.find((move) => {
-      return [grading.LABELS.INACCURACY, grading.LABELS.MISTAKE, grading.LABELS.MISS, grading.LABELS.BLUNDER].includes(move.grade);
-    });
+    const firstOpeningIssue = openingMoves.find((move) => isOpeningIssueGrade(move.grade));
     const lastBook = bookMoves.length ? bookMoves[bookMoves.length - 1] : null;
     const lines = [];
 
@@ -442,24 +789,137 @@
     };
   }
 
+  async function analyzeMoveWithEngine(move, engine, options) {
+    const ChessCtor = options.ChessCtor || browserChess;
+    const before = await engine.evaluate(move.beforeFen, {
+      multiPv: options.multiPv || 3,
+      depth: options.depth || 14
+    });
+    ensureNotCancelled(options.signal);
+    const after = await engine.evaluate(move.afterFen, {
+      multiPv: 1,
+      depth: options.depth || 14
+    });
+
+    const bestLine = before.lines[0];
+    const secondLine = before.lines[1];
+    const afterLine = after.lines[0];
+    if (!bestLine || !bestLine.score || !afterLine || !afterLine.score) {
+      throw new Error("Stockfish did not return a usable evaluation.");
+    }
+
+    const beforeScore = grading.scoreToCentipawns(bestLine.score);
+    const secondScore = secondLine && secondLine.score ? grading.scoreToCentipawns(secondLine.score) : beforeScore;
+    const playedScore = -grading.scoreToCentipawns(afterLine.score);
+    const loss = Math.max(0, beforeScore - playedScore);
+    const bestMove = before.bestMove || (bestLine.pv && bestLine.pv[0]) || "";
+    const playedWasBest = Boolean(bestMove && move.uci === bestMove);
+    const isSacrifice = move.materialDelta <= -250;
+    const tacticalSwing = beforeScore - secondScore;
+    const isBook = Boolean(options.isBook);
+    const missedOpportunity = isMissedOpportunity({
+      bestLine,
+      beforeScore,
+      playedScore,
+      loss,
+      tacticalSwing,
+      playedWasBest,
+      isBook
+    });
+    const motifs = detectMotifs({
+      move,
+      ChessCtor,
+      bestMove,
+      bestLine,
+      beforeScore,
+      playedScore,
+      loss,
+      tacticalSwing,
+      missedOpportunity
+    });
+    const phase = phaseForMove(move, isBook, ChessCtor);
+    const grade = grading.classifyMove({
+      loss,
+      beforeScore,
+      bestScore: beforeScore,
+      playedScore,
+      tacticalSwing,
+      playedWasBest,
+      isSacrifice,
+      isBook,
+      missedOpportunity
+    });
+    const bestSan = uciToSan(bestMove, move.beforeFen, ChessCtor);
+    const pv = lineToSan(bestLine.pv, move.beforeFen, ChessCtor, 6);
+
+    return {
+      ply: move.ply,
+      moveNumber: move.moveNumber,
+      color: move.color,
+      colorName: moveColorName(move.color),
+      san: move.san,
+      uci: move.uci,
+      piece: move.piece || "",
+      from: move.from || "",
+      to: move.to || "",
+      beforeFen: move.beforeFen,
+      afterFen: move.afterFen,
+      grade,
+      phase,
+      motifs,
+      loss: Math.round(loss),
+      evalBefore: Math.round(beforeScore),
+      evalAfter: Math.round(playedScore),
+      bestMove,
+      bestSan,
+      pv,
+      branches: buildBranches(before.lines, move, ChessCtor),
+      coachNote: buildCoachNote({
+        ...move,
+        grade,
+        loss,
+        evalBefore: beforeScore,
+        evalAfter: playedScore,
+        bestMove,
+        bestSan,
+        pv,
+        motifs,
+        ChessCtor,
+        colorName: moveColorName(move.color)
+      }),
+      heuristicNote: isHeuristicNoteGrade(grade)
+        ? "Extension heuristic, not Chess.com's exact review label."
+        : ""
+    };
+  }
+
+  async function analyzeMove(options) {
+    ensureNotCancelled(options.signal);
+
+    const ChessCtor = analysisChessCtor(options);
+    const engine = createEngine(options);
+
+    try {
+      await engine.init();
+      ensureNotCancelled(options.signal);
+      return await analyzeMoveWithEngine(options.move, engine, {
+        ...options,
+        ChessCtor
+      });
+    } finally {
+      await disposeEngine(engine, options);
+    }
+  }
+
   async function analyzeGame(options) {
     ensureNotCancelled(options.signal);
 
-    const ChessCtor = options.ChessCtor || browserChess;
-    if (!pgnTools || !grading || !stockfishTools || !ChessCtor) {
-      throw new Error("Analysis dependencies are not available.");
-    }
+    const ChessCtor = analysisChessCtor(options);
 
     const parsed = pgnTools.parseGamePgn(options.pgn, ChessCtor);
     ensureNotCancelled(options.signal);
 
-    const engine = options.engineFactory
-      ? options.engineFactory()
-      : new stockfishTools.StockfishEngine({
-          scriptUrl: options.scriptUrl,
-          wasmUrl: options.wasmUrl,
-          depth: options.depth || 14
-        });
+    const engine = createEngine(options);
 
     const results = [];
     const historyUci = [];
@@ -470,101 +930,12 @@
       for (let index = 0; index < parsed.moves.length; index += 1) {
         ensureNotCancelled(options.signal);
         const move = parsed.moves[index];
-        const before = await engine.evaluate(move.beforeFen, {
-          multiPv: options.multiPv || 3,
-          depth: options.depth || 14
-        });
-        ensureNotCancelled(options.signal);
-        const after = await engine.evaluate(move.afterFen, {
-          multiPv: 1,
-          depth: options.depth || 14
-        });
-
-        const bestLine = before.lines[0];
-        const secondLine = before.lines[1];
-        const afterLine = after.lines[0];
-        if (!bestLine || !bestLine.score || !afterLine || !afterLine.score) {
-          throw new Error("Stockfish did not return a usable evaluation.");
-        }
-
-        const beforeScore = grading.scoreToCentipawns(bestLine.score);
-        const secondScore = secondLine && secondLine.score ? grading.scoreToCentipawns(secondLine.score) : beforeScore;
-        const playedScore = -grading.scoreToCentipawns(afterLine.score);
-        const loss = Math.max(0, beforeScore - playedScore);
-        const bestMove = before.bestMove || (bestLine.pv && bestLine.pv[0]) || "";
-        const playedWasBest = Boolean(bestMove && move.uci === bestMove);
-        const isSacrifice = move.materialDelta <= -250;
-        const tacticalSwing = beforeScore - secondScore;
         const isBook = isBookMove(historyUci, move.uci, move.ply);
-        const missedOpportunity = isMissedOpportunity({
-          bestLine,
-          beforeScore,
-          playedScore,
-          loss,
-          tacticalSwing,
-          playedWasBest,
+        const result = await analyzeMoveWithEngine(move, engine, {
+          ...options,
+          ChessCtor,
           isBook
         });
-        const motifs = detectMotifs({
-          move,
-          ChessCtor,
-          bestMove,
-          bestLine,
-          beforeScore,
-          playedScore,
-          loss,
-          tacticalSwing,
-          missedOpportunity
-        });
-        const phase = phaseForMove(move, isBook, ChessCtor);
-        const grade = grading.classifyMove({
-          loss,
-          beforeScore,
-          bestScore: beforeScore,
-          playedScore,
-          tacticalSwing,
-          playedWasBest,
-          isSacrifice,
-          isBook,
-          missedOpportunity
-        });
-        const bestSan = uciToSan(bestMove, move.beforeFen, ChessCtor);
-        const pv = lineToSan(bestLine.pv, move.beforeFen, ChessCtor, 6);
-
-        const result = {
-          ply: move.ply,
-          moveNumber: move.moveNumber,
-          color: move.color,
-          colorName: moveColorName(move.color),
-          san: move.san,
-          uci: move.uci,
-          beforeFen: move.beforeFen,
-          afterFen: move.afterFen,
-          grade,
-          phase,
-          motifs,
-          loss: Math.round(loss),
-          evalBefore: Math.round(beforeScore),
-          evalAfter: Math.round(playedScore),
-          bestMove,
-          bestSan,
-          pv,
-          coachNote: buildCoachNote({
-            ...move,
-            grade,
-            loss,
-            evalBefore: beforeScore,
-            evalAfter: playedScore,
-            bestMove,
-            bestSan,
-            pv,
-            motifs,
-            colorName: moveColorName(move.color)
-          }),
-          heuristicNote: [grading.LABELS.BOOK, grading.LABELS.BRILLIANT, grading.LABELS.GREAT, grading.LABELS.MISS].includes(grade)
-            ? "Extension heuristic, not Chess.com's exact review label."
-            : ""
-        };
         results.push(result);
         historyUci.push(move.uci);
 
@@ -577,9 +948,7 @@
         }
       }
     } finally {
-      if (options.disposeEngine !== false && engine && typeof engine.terminate === "function") {
-        await engine.terminate();
-      }
+      await disposeEngine(engine, options);
     }
 
     return {
@@ -593,6 +962,7 @@
 
   return {
     analyzeGame,
+    analyzeMove,
     buildCoachNote,
     buildPhaseSummary,
     lineToSan,

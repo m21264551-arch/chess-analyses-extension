@@ -1,4 +1,9 @@
-const SCRIPT_FILES = [
+const PANEL_DISMISSED_KEY = "chess-coach-panel-dismissed";
+const BOOTSTRAP_FILES = [
+  "src/config.js",
+  "src/content/content.js"
+];
+const DEPENDENCY_FILES = [
   "vendor/chess/prelude.js",
   "vendor/chess/chess.js",
   "vendor/chess/postlude.js",
@@ -8,9 +13,7 @@ const SCRIPT_FILES = [
   "src/core/stockfish-engine.js",
   "src/core/analyzer.js",
   "src/sites/lichess.js",
-  "src/sites/chesscom.js",
-  "src/config.js",
-  "src/content/content.js"
+  "src/sites/chesscom.js"
 ];
 
 const SUPPORTED_HOSTS = [/^https:\/\/([^/]+\.)?chess\.com\//, /^https:\/\/lichess\.org\//];
@@ -33,18 +36,27 @@ async function getActiveTab() {
 async function getInjectedState(tabId) {
   const [injection] = await chrome.scripting.executeScript({
     target: { tabId },
-    func: () => ({
+    func: (dismissedKey) => ({
       hasPanel: Boolean(document.getElementById("chess-coach-panel")),
+      isDismissed: (() => {
+        try {
+          return sessionStorage.getItem(dismissedKey) === "1";
+        } catch (_error) {
+          return false;
+        }
+      })(),
       hasDependencies: Boolean(
         globalThis.ChessCoachAnalyzer &&
           globalThis.ChessCoachPgn &&
           globalThis.ChessCoachGrading &&
+          globalThis.ChessCoachExtensionEngine &&
           globalThis.ChessCoachVendor &&
           globalThis.ChessCoachVendor.Chess
       )
-    })
+    }),
+    args: [PANEL_DISMISSED_KEY]
   });
-  return injection && injection.result ? injection.result : { hasPanel: false, hasDependencies: false };
+  return injection && injection.result ? injection.result : { hasPanel: false, isDismissed: false, hasDependencies: false };
 }
 
 function isSupportedUrl(url) {
@@ -60,17 +72,38 @@ async function openPanel() {
       return;
     }
 
-    const injectedState = await getInjectedState(tab.id);
-    if (injectedState.hasPanel) {
-      setStatus("Panel is already open on this tab.");
-      return;
-    }
+    let injectedState = await getInjectedState(tab.id);
 
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      files: injectedState.hasDependencies ? ["src/content/content.js"] : SCRIPT_FILES
+      func: (dismissedKey) => {
+        try {
+          sessionStorage.removeItem(dismissedKey);
+        } catch (_error) {
+          // Some pages can block storage access; the explicit open should still continue.
+        }
+      },
+      args: [PANEL_DISMISSED_KEY]
     });
-    setStatus("Panel opened on this tab.");
+
+    if (!injectedState.hasPanel) {
+      setStatus(injectedState.isDismissed ? "Reopening panel..." : "Opening panel...");
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: BOOTSTRAP_FILES
+      });
+      injectedState = await getInjectedState(tab.id);
+    }
+
+    if (!injectedState.hasDependencies) {
+      setStatus("Loading analysis tools...");
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: DEPENDENCY_FILES
+      });
+    }
+
+    setStatus(injectedState.hasPanel ? "Panel is ready on this tab." : "Panel opened on this tab.");
   } catch (error) {
     setStatus(error.message || String(error));
   } finally {
@@ -89,7 +122,13 @@ async function closePanel() {
 
     const [closed] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func: () => {
+      func: (dismissedKey) => {
+        try {
+          sessionStorage.setItem(dismissedKey, "1");
+        } catch (_error) {
+          // Closing the visible panel should not fail because storage is unavailable.
+        }
+
         if (typeof globalThis.ChessCoachClosePanel === "function") {
           return globalThis.ChessCoachClosePanel();
         }
@@ -99,7 +138,8 @@ async function closePanel() {
         if (overlay) overlay.remove();
         if (panel) panel.remove();
         return Boolean(panel || overlay);
-      }
+      },
+      args: [PANEL_DISMISSED_KEY]
     });
 
     setStatus(closed && closed.result ? "Panel closed on this tab." : "Panel is not open on this tab.");
@@ -114,7 +154,7 @@ async function reloadTab() {
   const tab = await getActiveTab();
   if (tab && tab.id) {
     await chrome.tabs.reload(tab.id);
-    setStatus("Tab reloaded. The panel should appear after the page finishes loading.");
+    setStatus("Tab reloaded. Open the panel again when you want it.");
   }
 }
 

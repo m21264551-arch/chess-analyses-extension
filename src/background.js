@@ -1,5 +1,6 @@
 const ALLOWED_FETCHES = [
   /^https:\/\/lichess\.org\/game\/export\/[A-Za-z0-9]{8}(?:\?.*)?$/,
+  /^https:\/\/api\.chess\.com\/pub\/player\/[^/?#]+\/games\/archives$/,
   /^https:\/\/api\.chess\.com\/pub\/player\/[^/?#]+\/games\/\d{4}\/\d{2}\/pgn$/
 ];
 
@@ -83,21 +84,21 @@ async function sendToOffscreen(message) {
   return response.payload;
 }
 
+function sendAsyncResponse(sendResponse, promise) {
+  promise
+    .then((payload) => sendResponse({ ok: true, payload }))
+    .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+  return true;
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || message.type !== "fetch-pgn" || typeof message.url !== "string") {
     if (!message || message.target !== "background-engine") {
       return false;
     }
 
-    sendToOffscreen(message)
-      .then((payload) => sendResponse({ ok: true, payload }))
-      .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
-    return true;
+    return sendAsyncResponse(sendResponse, sendToOffscreen(message));
   }
 
-  fetchText(message.url)
-    .then((payload) => sendResponse({ ok: true, payload }))
-    .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
-
-  return true;
+  return sendAsyncResponse(sendResponse, fetchText(message.url));
 });

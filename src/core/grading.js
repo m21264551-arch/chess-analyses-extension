@@ -20,6 +20,19 @@
     MISS: "Miss",
     BLUNDER: "Blunder"
   };
+  const GRADE_ORDER = [
+    LABELS.BOOK,
+    LABELS.BRILLIANT,
+    LABELS.BEST,
+    LABELS.GREAT,
+    LABELS.EXCELLENT,
+    LABELS.GOOD,
+    LABELS.INACCURACY,
+    LABELS.MISTAKE,
+    LABELS.MISS,
+    LABELS.BLUNDER
+  ];
+  const GRADE_SORT = new Map(GRADE_ORDER.map((label, index) => [label, index]));
 
   function scoreToCentipawns(score) {
     if (!score) return 0;
@@ -104,21 +117,11 @@
   }
 
   function gradeSortValue(label) {
-    return [
-      LABELS.BOOK,
-      LABELS.BRILLIANT,
-      LABELS.BEST,
-      LABELS.GREAT,
-      LABELS.EXCELLENT,
-      LABELS.GOOD,
-      LABELS.INACCURACY,
-      LABELS.MISTAKE,
-      LABELS.MISS,
-      LABELS.BLUNDER
-    ].indexOf(label);
+    return GRADE_SORT.has(label) ? GRADE_SORT.get(label) : -1;
   }
 
   return {
+    GRADE_ORDER,
     LABELS,
     MATE_CP,
     classifyMove,

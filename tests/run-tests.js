@@ -16,6 +16,63 @@ function test(name, fn) {
   tests.push({ name, fn });
 }
 
+function makeChessComDoc({ scripts = [], anchors = [], times = [], dataUsernames = [], attributes = {}, moveTexts = [], bodyText = "" } = {}) {
+  function decodeHtml(value) {
+    return String(value || "")
+      .replace(/&quot;/g, '"')
+      .replace(/&#34;/g, '"')
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">");
+  }
+
+  const documentElement = {
+    innerHTML: [
+      ...scripts,
+      ...anchors.map((href) => `<a href="${href}"></a>`),
+      ...dataUsernames.map((username) => `<span data-username="${username}"></span>`)
+    ].join("\n")
+  };
+
+  return {
+    documentElement,
+    createElement() {
+      return {
+        value: "",
+        set innerHTML(value) {
+          this.value = decodeHtml(value);
+        }
+      };
+    },
+    querySelectorAll(selector) {
+      if (selector === "script") {
+        return scripts.map((textContent) => ({ textContent }));
+      }
+      if (selector === 'a[href*="/member/"]') {
+        return anchors.map((href) => ({ href }));
+      }
+      if (selector === "time[datetime]") {
+        return times.map((datetime) => ({ getAttribute: () => datetime }));
+      }
+      if (selector === "[data-username]") {
+        return dataUsernames.map((username) => ({ getAttribute: () => username }));
+      }
+      if (/move|moves/i.test(selector)) {
+        return moveTexts.map((text) => ({ textContent: text, innerText: text }));
+      }
+      const attributeMatch = selector.match(/^\[([^\]]+)\]$/);
+      if (attributeMatch && Object.prototype.hasOwnProperty.call(attributes, attributeMatch[1])) {
+        return [{ getAttribute: () => attributes[attributeMatch[1]] }];
+      }
+      return [];
+    },
+    body: {
+      textContent: bodyText,
+      innerText: bodyText
+    }
+  };
+}
+
 test("classifies centipawn loss thresholds", () => {
   assert.equal(grading.classifyMove({ loss: 0, playedWasBest: true }), "Best");
   assert.equal(grading.classifyMove({ loss: 20 }), "Excellent");
@@ -132,11 +189,95 @@ test("analyzes moves with a stubbed engine", async () => {
 
   assert.equal(result.moves[0].grade, "Best");
   assert.equal(result.moves[1].grade, "Blunder");
-  assert.match(result.moves[1].coachNote, /e5 was a blunder/i);
+  assert.match(result.moves[1].coachNote, /e5 is a blunder/i);
   assert.match(result.moves[1].coachNote, /Nf6/);
-  assert.match(result.moves[1].coachNote, /3\.6 pawns/);
+  assert.doesNotMatch(result.moves[1].coachNote, /3\.6 pawns/);
+  assert.ok(result.moves[1].branches.length >= 1);
+  assert.deepEqual(result.moves[1].branches[0].pvUci, ["g8f6"]);
   assert.equal(result.summary.Best, 1);
   assert.equal(result.summary.Blunder, 1);
+});
+
+test("analyzes a single branch move", async () => {
+  const before = new Chess();
+  const beforeFen = before.fen();
+  const beforeMaterial = pgnTools.materialBalance(before, "w");
+  const played = before.move("e4");
+  const afterMaterial = pgnTools.materialBalance(before, "w");
+  const move = {
+    ply: 1,
+    moveNumber: 1,
+    color: "w",
+    san: played.san,
+    uci: "e2e4",
+    piece: played.piece,
+    from: played.from,
+    to: played.to,
+    beforeFen,
+    afterFen: before.fen(),
+    materialDelta: afterMaterial - beforeMaterial,
+    captured: played.captured || ""
+  };
+
+  class StubEngine {
+    async init() {}
+    terminate() {}
+    async evaluate(fen, options) {
+      if (options.multiPv > 1) {
+        assert.equal(fen, beforeFen);
+        return {
+          bestMove: "e2e4",
+          lines: [
+            { score: { cp: 35 }, pv: ["e2e4", "e7e5"] },
+            { score: { cp: 20 }, pv: ["d2d4", "d7d5"] }
+          ]
+        };
+      }
+      assert.equal(fen, move.afterFen);
+      return {
+        bestMove: "e7e5",
+        lines: [{ score: { cp: -32 }, pv: ["e7e5"] }]
+      };
+    }
+  }
+
+  const result = await analyzer.analyzeMove({
+    move,
+    ChessCtor: Chess,
+    engineFactory: () => new StubEngine()
+  });
+
+  assert.equal(result.grade, "Best");
+  assert.match(result.coachNote, /e4 is best/i);
+  assert.equal(result.branches[0].pvUci[0], "e2e4");
+});
+
+test("explains top moves with chess ideas instead of engine agreement", () => {
+  const chess = new Chess("4k2r/6B1/8/8/8/8/8/4K3 w - - 0 1");
+  const beforeFen = chess.fen();
+  const played = chess.move({ from: "g7", to: "h8" });
+  const note = analyzer.buildCoachNote({
+    grade: "Best",
+    san: played.san,
+    uci: "g7h8",
+    piece: played.piece,
+    from: played.from,
+    to: played.to,
+    captured: played.captured,
+    materialDelta: 500,
+    beforeFen,
+    afterFen: chess.fen(),
+    evalBefore: 49,
+    evalAfter: 52,
+    pv: "Bxh8 Nh6 Ne2",
+    motifs: [],
+    ChessCtor: Chess,
+    colorName: "White"
+  });
+
+  assert.match(note, /Bxh8 is best/i);
+  assert.match(note, /wins a rook/i);
+  assert.doesNotMatch(note, /Stockfish|top choice|matched the engine/i);
 });
 
 test("does not initialize an engine after cancellation", async () => {
@@ -274,6 +415,21 @@ test("blocks unfinished games", () => {
   );
 });
 
+test("blocks unfinished Chess.com visible move-list PGNs", () => {
+  assert.throws(
+    () =>
+      pgnTools.parseGamePgn(
+        `[Event "Chess.com visible game"]
+[Result "*"]
+[ChessCoachVisibleMoveList "1"]
+
+1. e4 e5 *`,
+        Chess
+      ),
+    /after the game ends/
+  );
+});
+
 test("rejects malformed PGN", () => {
   assert.throws(() => pgnTools.parseGamePgn("not a pgn", Chess), /Could not read PGN|no moves/i);
 });
@@ -324,6 +480,80 @@ test("selects a Chess.com game from monthly PGN archive", () => {
   assert.match(selected, /Target/);
 });
 
+test("extracts escaped Chess.com PGN from page scripts", () => {
+  const pgn = `[Event "Script"]
+[Site "https://www.chess.com/game/live/222"]
+[Result "1-0"]
+
+1. d4 d5 1-0`;
+  const doc = makeChessComDoc({
+    scripts: [`window.__STATE__ = {"game":{"pgn":${JSON.stringify(pgn)}}};`]
+  });
+  assert.equal(chesscom.extractPgnFromPage(doc), pgn);
+});
+
+test("builds a PGN from the finished visible Chess.com move list", () => {
+  const doc = makeChessComDoc({
+    moveTexts: ["Moves 1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 White won"]
+  });
+  const pgn = chesscom.extractPgnFromVisibleMoveList(doc, "https://www.chess.com/game/live/333", Chess);
+  const parsed = pgnTools.parseGamePgn(pgn, Chess);
+
+  assert.match(pgn, /\[ChessCoachVisibleMoveList "1"\]/);
+  assert.equal(parsed.moves.length, 6);
+  assert.equal(parsed.result, "1-0");
+  assert.equal(parsed.moves[5].san, "a6");
+});
+
+test("ignores unfinished visible Chess.com move lists", () => {
+  const doc = makeChessComDoc({
+    moveTexts: ["Moves 1. e4 e5 2. Nf3 Nc6"]
+  });
+
+  assert.equal(chesscom.extractPgnFromVisibleMoveList(doc, "https://www.chess.com/game/live/333", Chess), "");
+});
+
+test("discovers Chess.com archive months when page dates are missing", async () => {
+  const archive = `[Event "Target"]
+[Link "https://www.chess.com/game/live/222"]
+[Result "1-0"]
+
+1. d4 d5 1-0`;
+  const calls = [];
+  const doc = makeChessComDoc({
+    scripts: ['{"white":{"username":"ArchiveHero"},"black":{"username":"Rival"}}']
+  });
+
+  const source = await chesscom.getPgn({
+    document: doc,
+    locationHref: "https://www.chess.com/game/live/222",
+    fetchPgn: async (url) => {
+      calls.push(url);
+      if (url === "https://api.chess.com/pub/player/archivehero/games/archives") {
+        return {
+          ok: true,
+          payload: {
+            ok: true,
+            text: JSON.stringify({
+              archives: [
+                "https://api.chess.com/pub/player/archivehero/games/2025/01",
+                "https://api.chess.com/pub/player/archivehero/games/2025/02"
+              ]
+            })
+          }
+        };
+      }
+      if (url === "https://api.chess.com/pub/player/archivehero/games/2025/02/pgn") {
+        return { ok: true, payload: { ok: true, text: archive } };
+      }
+      return { ok: true, payload: { ok: false, status: 404, text: "" } };
+    }
+  });
+
+  assert.match(source.pgn, /Target/);
+  assert.ok(calls.includes("https://api.chess.com/pub/player/archivehero/games/archives"));
+});
+
 test("parses Lichess game IDs", () => {
   assert.equal(lichess.parseGameIdFromUrl("https://lichess.org/AbC123xY/black"), "AbC123xY");
   assert.equal(lichess.parseGameIdFromUrl("https://lichess.org/analysis/game/abcdefgh"), "abcdefgh");
@@ -332,6 +562,10 @@ test("parses Lichess game IDs", () => {
 
 test("parses Chess.com game IDs and archive URLs", () => {
   assert.equal(chesscom.parseGameIdFromUrl("https://www.chess.com/game/live/123456789"), "123456789");
+  assert.equal(
+    chesscom.buildArchivesUrl("Hikaru"),
+    "https://api.chess.com/pub/player/hikaru/games/archives"
+  );
   assert.equal(
     chesscom.buildArchiveUrl("Hikaru", "2025/02"),
     "https://api.chess.com/pub/player/hikaru/games/2025/02/pgn"
