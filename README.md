@@ -1,5 +1,7 @@
 # Post-Game Chess Coach
 
+[Install from the Chrome Web Store](https://chromewebstore.google.com/detail/post-game-chess-coach/afddbohlglllnfdjhgdojbdalbfnnbaj)
+
 Post-Game Chess Coach is a Manifest V3 Chrome extension for reviewing completed Chess.com and Lichess games.
 
 It fetches a finished-game PGN when possible, runs the bundled Stockfish engine locally in Chrome, and shows move grades, best moves, and short principal variations. It blocks unfinished games so it is not useful for live-game assistance.
