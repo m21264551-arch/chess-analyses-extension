@@ -9,7 +9,7 @@ Short description:
 Local post-game chess analysis for completed Chess.com and Lichess games.
 
 Detailed description:
-Post-Game Chess Coach adds a compact analysis panel to completed Chess.com and Lichess games. It fetches the finished-game PGN when available, runs bundled Stockfish locally in Chrome, and shows move grades, best moves, and short principal variations.
+Review completed Chess.com and Lichess games with Stockfish running locally in Chrome. The panel shows move grades, suggested moves, and engine continuations. Paste a PGN if automatic game lookup fails.
 
 Features:
 - Analyze completed standard chess games from Chess.com and Lichess.

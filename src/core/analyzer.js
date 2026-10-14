@@ -362,7 +362,7 @@
     }
     if (piece === "r") return "it improves rook activity and puts pressure on open lines";
     if (piece === "q") return "it improves the queen's activity without losing time to a tactic";
-    return "it is mainly an optimization move: it improves the piece placement without creating a new weakness";
+    return "it changes the piece placement. Check the engine line to see the suggested continuation";
   }
 
   function positiveMoveIdea(details) {
@@ -403,7 +403,7 @@
 
   function continuationSentence(details) {
     if (!details.pv) return "";
-    return `A natural continuation is ${details.pv}; the point is the idea, not memorizing the whole line.`;
+    return `Engine continuation: ${details.pv}.`;
   }
 
   function gradePhrase(grade) {
@@ -765,7 +765,7 @@
     const lines = [];
 
     if (openingName && lastBook) {
-      lines.push(`Opening: ${openingName}; local book through ${moveLabel(lastBook)}.`);
+      lines.push(`Opening: ${openingName}. Local book through ${moveLabel(lastBook)}.`);
     } else if (openingName) {
       lines.push(`Opening: ${openingName}.`);
     } else if (lastBook) {
